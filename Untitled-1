@@ -1,0 +1,690 @@
+---
+title: Integrations
+description: Learn how to integrate the Timeline component with video players, overlays, undo/redo systems, and other editor components
+---
+
+The Timeline component is designed to integrate seamlessly with the rest of your video editor setup. This guide covers common integration patterns and best practices.
+
+
+## How the Timeline Works in React Video Editor Pro
+
+Think of the React Video Editor Pro (RVE) like a professional video editing app similar to Adobe Premiere or Final Cut Pro. The Timeline component is the heart of this editor - it's the horizontal strip at the bottom where you see all your video clips, text, images, and audio arranged in time.
+
+### The Big Picture: What's Happening
+
+When you use RVE, you're working with what we call "overlays" - these are all the things you add to your video:
+- Text that appears on screen
+- Images and stickers you place
+- Video clips you import
+- Audio files and music
+- Captions and subtitles
+
+The Timeline component takes all these overlays and displays them as colored blocks on horizontal tracks, just like you'd see in any professional video editor.
+
+### Why We Need This Integration
+
+**The Problem:** RVE stores your content as "overlays" (which track position, size, and timing), but the Timeline component expects "tracks" (which organize items horizontally by time). These are two different ways of organizing the same information.
+
+**The Solution:** We built a translation system that automatically converts between these two formats, so they stay perfectly in sync.
+
+## The `@/timeline-section` Component: The Bridge Between Two Worlds
+
+The `@/timeline-section` component is the crucial bridge that makes RVE's timeline functionality possible. It's not just a wrapper around the timeline - it's a sophisticated integration layer that handles the complex task of keeping RVE's overlay system perfectly synchronized with the timeline's track-based interface.
+
+### Architecture Overview
+
+The `TimelineSection` component consists of three main parts:
+
+1. **The Main Component** (`timeline-section.tsx`) - Orchestrates everything
+2. **Transform Hooks** (`use-timeline-transforms.ts`) - Handles data conversion
+3. **Handler Hooks** (`use-timeline-handlers.ts`) - Manages user interactions
+
+```typescript
+// The TimelineSection component structure
+export const TimelineSection: React.FC<TimelineSectionProps> = () => {
+  // State management
+  const [timelineTracks, setTimelineTracks] = React.useState<TimelineTrack[]>([]);
+  const lastProcessedOverlaysRef = React.useRef<Overlay[]>([]);
+
+  // Get all editor context (overlays, player, selection, etc.)
+  const { overlays, currentFrame, isPlaying, playerRef, ... } = useEditorContext();
+  
+  // Get transformation functions
+  const { transformOverlaysToTracks } = useTimelineTransforms();
+  
+  // Get event handlers
+  const { handleItemMove, handleItemResize, ... } = useTimelineHandlers({...});
+
+  // Render the actual Timeline component with all the props
+  return <Timeline tracks={timelineTracks} ... />;
+};
+```
+
+### Why This Component is Critical
+
+#### 1. **Data Format Translation**
+
+RVE's overlays and the timeline's tracks represent the same information but in completely different formats:
+
+**RVE Overlay Format:**
+```typescript
+{
+  id: 123,
+  type: OverlayType.TEXT,
+  from: 150,              // Start frame (5 seconds at 30fps)
+  durationInFrames: 90,   // Duration (3 seconds)
+  row: 1,                 // Which track it's on
+  content: "Hello World",
+  left: 100, top: 50,     // Canvas position
+  width: 200, height: 100 // Canvas size
+}
+```
+
+**Timeline Track Format:**
+```typescript
+{
+  id: "track-1",
+  name: "Track 2",
+  items: [{
+    id: "123",
+    trackId: "track-1",
+    start: 5.0,           // Start time in seconds
+    end: 8.0,             // End time in seconds
+    label: "Hello World",
+    type: "text",
+    color: "#3b82f6",     // Blue for text
+    data: { /* original overlay */ }
+  }]
+}
+```
+
+The `useTimelineTransforms` hook handles this conversion automatically:
+
+```typescript
+const transformOverlaysToTracks = (overlays: Overlay[]): TimelineTrack[] => {
+  // Group overlays by row
+  const rowMap = new Map<number, Overlay[]>();
+  overlays.forEach(overlay => {
+    const row = overlay.row || 0;
+    if (!rowMap.has(row)) rowMap.set(row, []);
+    rowMap.get(row)!.push(overlay);
+  });
+
+  // Convert each row to a timeline track
+  const tracks: TimelineTrack[] = [];
+  for (let i = 0; i <= maxRow; i++) {
+    const overlaysInRow = rowMap.get(i) || [];
+    const items = overlaysInRow.map(overlay => ({
+      id: overlay.id.toString(),
+      trackId: `track-${i}`,
+      start: overlay.from / FPS,
+      end: (overlay.from + overlay.durationInFrames) / FPS,
+      label: getOverlayLabel(overlay),
+      type: mapOverlayTypeToTimelineType(overlay.type),
+      color: getOverlayColor(overlay.type),
+      data: overlay // Keep original data for reverse conversion
+    }));
+    
+    tracks.push({
+      id: `track-${i}`,
+      name: `Track ${i + 1}`,
+      items,
+      magnetic: false,
+      visible: true,
+      muted: false
+    });
+  }
+  return tracks;
+};
+```
+
+#### 2. **Preventing Circular Updates**
+
+One of the trickiest problems the `TimelineSection` solves is preventing infinite update loops. Here's what could happen without proper protection:
+
+1. User drags timeline item → Timeline updates
+2. Timeline calls `onTracksChange` → Overlays update  
+3. Overlays change → Timeline re-renders
+4. Timeline re-renders → Triggers another update
+5. **Infinite loop crashes the app**
+
+The solution uses a clever flag system:
+
+```typescript
+const isUpdatingFromTimelineRef = React.useRef(false);
+
+const handleTracksChange = (newTracks: TimelineTrack[]) => {
+  // Set flag: "I'm updating from timeline, don't update timeline back"
+  isUpdatingFromTimelineRef.current = true;
+  
+  const newOverlays = transformTracksToOverlays(newTracks);
+  setOverlays(newOverlays);
+  
+  // Clear flag after React processes the update
+  setTimeout(() => {
+    isUpdatingFromTimelineRef.current = false;
+  }, 0);
+};
+
+// Only update timeline when overlays change AND we're not in a timeline update
+React.useEffect(() => {
+  if (!isUpdatingFromTimelineRef.current) {
+    setTimelineTracks(transformOverlaysToTracks(overlays));
+  }
+}, [overlays]);
+```
+
+#### 3. **Smart Change Detection**
+
+To avoid unnecessary re-renders, the component performs deep comparison of overlay properties:
+
+```typescript
+React.useEffect(() => {
+  if (!isUpdatingFromTimelineRef.current) {
+    // Only update if overlays have actually changed
+    const hasChanged = overlays.length !== lastProcessedOverlaysRef.current.length ||
+      overlays.some((overlay, index) => {
+        const lastOverlay = lastProcessedOverlaysRef.current[index];
+        return !lastOverlay || 
+          overlay.id !== lastOverlay.id ||
+          overlay.from !== lastOverlay.from ||
+          overlay.durationInFrames !== lastOverlay.durationInFrames ||
+          overlay.row !== lastOverlay.row ||
+          overlay.type !== lastOverlay.type ||
+          // ... check all relevant properties
+      });
+    
+    if (hasChanged) {
+      lastProcessedOverlaysRef.current = [...overlays];
+      setTimelineTracks(transformOverlaysToTracks(overlays));
+    }
+  }
+}, [overlays, transformOverlaysToTracks]);
+```
+
+#### 4. **Comprehensive Event Handling**
+
+The `useTimelineHandlers` hook provides a complete set of event handlers that translate timeline interactions back to overlay operations:
+
+```typescript
+// When user moves an item on timeline
+const handleItemMove = (itemId: string, newStart: number, newEnd: number, newTrackId: string) => {
+  const overlayId = parseInt(itemId, 10);
+  const overlay = overlays.find(o => o.id === overlayId);
+  if (overlay) {
+    const newRow = parseInt(newTrackId.replace('track-', ''), 10);
+    const updatedOverlay: Overlay = {
+      ...overlay,
+      from: Math.round(newStart * FPS),           // Convert seconds to frames
+      durationInFrames: Math.round((newEnd - newStart) * FPS),
+      row: newRow,                               // Update track assignment
+    };
+    handleOverlayChange(updatedOverlay);         // Update in RVE
+  }
+};
+
+// When user selects an item on timeline
+const handleItemSelect = (itemId: string) => {
+  const overlayId = parseInt(itemId, 10);
+  setSelectedOverlayId(overlayId);              // Update RVE selection
+  setSidebarForOverlay(overlayId);              // Open appropriate sidebar panel
+};
+
+// When user seeks on timeline
+const handleTimelineFrameChange = (frame: number) => {
+  if (playerRef.current) {
+    playerRef.current.seekTo(frame);            // Update video player
+  }
+};
+```
+
+#### 5. **Intelligent Sidebar Integration**
+
+When you click on a timeline item, the component automatically opens the correct editing panel:
+
+```typescript
+const setSidebarForOverlay = (overlayId: number) => {
+  const overlay = overlays.find(o => o.id === overlayId);
+  if (overlay) {
+    switch (overlay.type) {
+      case OverlayType.TEXT:
+        setActivePanel(OverlayType.TEXT);       // Open text editing panel
+        break;
+      case OverlayType.VIDEO:
+        setActivePanel(OverlayType.VIDEO);      // Open video editing panel
+        break;
+      case OverlayType.SOUND:
+        setActivePanel(OverlayType.SOUND);      // Open audio editing panel
+        break;
+      // ... handle all overlay types
+    }
+    setIsOpen(true);                           // Ensure sidebar is visible
+  }
+};
+```
+
+#### 6. **Advanced Media Handling**
+
+The `TimelineSection` handles complex media timing scenarios, especially for video and audio files where you might want to use only a portion of the original media:
+
+```typescript
+// For video overlays with media timing
+if (overlay.type === OverlayType.VIDEO) {
+  const videoOverlay = overlay as any;
+  const videoStartTimeSeconds = videoOverlay.videoStartTime || 0;
+  
+  return {
+    ...baseItem,
+    mediaStart: videoStartTimeSeconds,                    // Where to start in original video
+    mediaSrcDuration: videoOverlay.mediaSrcDuration,     // Total length of original video
+    mediaEnd: videoStartTimeSeconds + (overlay.durationInFrames / FPS) // Where to end
+  };
+}
+
+// For audio overlays with media timing  
+if (overlay.type === OverlayType.SOUND) {
+  const audioOverlay = overlay as any;
+  const audioStartTimeSeconds = audioOverlay.startFromSound || 0;
+  
+  return {
+    ...baseItem,
+    mediaStart: audioStartTimeSeconds,                   // Where to start in original audio
+    mediaEnd: audioStartTimeSeconds + (overlay.durationInFrames / FPS)
+  };
+}
+```
+
+This allows users to:
+- Use a 10-second clip from minute 2:30 of a 5-minute video
+- Play seconds 45-60 of a song in their 15-second timeline segment
+- Maintain perfect sync between timeline position and media playback position
+
+#### 7. **Performance Optimizations**
+
+The component includes several performance optimizations:
+
+**Memoized Transformations:**
+```typescript
+const transformOverlaysToTracks = React.useCallback((overlays: Overlay[]): TimelineTrack[] => {
+  // Expensive transformation logic is memoized
+  // Only re-runs when overlays actually change
+}, []);
+```
+
+**Efficient Change Detection:**
+```typescript
+// Instead of JSON.stringify comparison (slow), we check specific properties
+const hasChanged = overlays.length !== lastProcessedOverlaysRef.current.length ||
+  overlays.some((overlay, index) => {
+    const lastOverlay = lastProcessedOverlaysRef.current[index];
+    return !lastOverlay || 
+      overlay.id !== lastOverlay.id ||
+      overlay.from !== lastOverlay.from ||
+      overlay.durationInFrames !== lastOverlay.durationInFrames ||
+      overlay.row !== lastOverlay.row ||
+      overlay.type !== lastOverlay.type;
+  });
+```
+
+**Batched Updates:**
+```typescript
+// Use setTimeout to batch React updates and prevent excessive re-renders
+setTimeout(() => {
+  isUpdatingFromTimelineRef.current = false;
+}, 0);
+```
+
+### How the Translation Works
+
+#### Step 1: Converting Overlays to Timeline Tracks
+
+When you have overlays in your project, here's what happens:
+
+```typescript
+// Your overlays might look like this:
+// - Text overlay: "Hello World" from 0-5 seconds on row 1
+// - Image overlay: "logo.png" from 2-8 seconds on row 1  
+// - Audio overlay: "music.mp3" from 0-10 seconds on row 2
+
+// The system groups them by row and converts to timeline format:
+// Track 1: [Text block (0-5s), Image block (2-8s)]
+// Track 2: [Audio block (0-10s)]
+```
+
+**Why we do this:** The timeline needs to know which items go on which horizontal track, and when they start and end. This grouping makes it possible to display everything correctly.
+
+#### Step 2: Color Coding by Type
+
+Each type of content gets its own color so you can quickly identify what's what:
+
+- **Text:** Blue blocks (`#3b82f6`)
+- **Images:** Green blocks (`#10b981`)
+- **Videos:** Purple blocks (`#8b5cf6`)
+- **Audio:** Orange blocks (`#f59e0b`)
+- **Captions:** Red blocks (`#ef4444`)
+- **Stickers:** Pink blocks (`#ec4899`)
+- **Shapes:** Gray blocks (`#6b7280`)
+
+**Why we do this:** Just like in professional video editors, color coding helps you quickly understand your timeline at a glance.
+
+```typescript
+const getOverlayColor = (type: OverlayType): string => {
+  switch (type) {
+    case OverlayType.TEXT: return '#3b82f6';    // Blue
+    case OverlayType.IMAGE: return '#10b981';   // Green
+    case OverlayType.VIDEO: return '#8b5cf6';   // Purple
+    case OverlayType.SOUND: return '#f59e0b';   // Amber
+    case OverlayType.CAPTION: return '#ef4444'; // Red
+    case OverlayType.STICKER: return '#ec4899'; // Pink
+    case OverlayType.SHAPE: return '#6b7280';   // Gray
+    default: return '#9ca3af';                  // Default gray
+  }
+};
+```
+
+### Keeping Everything in Sync
+
+#### Video Player Connection
+
+When you click somewhere on the timeline, the video player jumps to that exact moment. When you press play/pause on the timeline, the video player responds. This happens because:
+
+```typescript
+// When you click the timeline at 5 seconds:
+const handleTimelineFrameChange = (frame: number) => {
+  // Tell the video player to jump to that time
+  playerRef.current.seekTo(frame);
+};
+```
+
+**Why we do this:** You expect the timeline and video player to work together seamlessly, just like in any video editor.
+
+#### Sidebar Panel Integration
+
+When you click on a timeline item (like a text block), the right sidebar automatically opens to the correct editing panel:
+
+- Click a text block → Text editing panel opens
+- Click a video block → Video editing panel opens  
+- Click an audio block → Audio editing panel opens
+
+**Why we do this:** This makes editing feel natural - you click what you want to edit, and the right tools appear.
+
+### Handling Complex Media
+
+#### Video and Audio Timing
+
+For video and audio files, we track two different timings:
+
+1. **Timeline timing:** When it appears in your final video (e.g., 10-20 seconds)
+2. **Media timing:** Which part of the original file to play (e.g., seconds 30-40 of a 2-minute song)
+
+```typescript
+// Example: You have a 2-minute song, but only want seconds 30-40 
+// to play from 10-20 seconds in your final video:
+{
+  start: 10,           // Starts at 10 seconds in final video
+  end: 20,             // Ends at 20 seconds in final video  
+  mediaStart: 30,      // Starts at 30 seconds of the original song
+  mediaEnd: 40         // Ends at 40 seconds of the original song
+}
+```
+
+**Why we do this:** You often want to use just a portion of a longer video or audio file, starting from a specific point in the original media.
+
+### Preventing Conflicts
+
+#### The Circular Update Problem
+
+Here's a tricky technical problem we solved: When you move something on the timeline, it updates the overlays. When overlays update, they could trigger the timeline to update again, creating an endless loop.
+
+**Our Solution:** We use a "flag" system that says "I'm currently updating from the timeline, so don't update the timeline back."
+
+```typescript
+// Set flag: "I'm updating from timeline"
+isUpdatingFromTimelineRef.current = true;
+
+// Update the overlays based on timeline changes
+updateOverlays(newData);
+
+// Clear flag: "Okay, timeline can update again"
+setTimeout(() => {
+  isUpdatingFromTimelineRef.current = false;
+}, 0);
+```
+
+**Why we do this:** Without this protection, moving one item could cause the entire interface to freeze or behave erratically.
+
+### What You See vs. What's Happening
+
+When you use RVE, here's what you experience vs. what's happening behind the scenes:
+
+**What You See:**
+- Drag a text block from 5 seconds to 8 seconds
+- The video preview updates to show the text in the new position
+- The text editing panel stays open
+
+**What's Happening:**
+1. Timeline detects the drag and calculates new timing (8 seconds)
+2. System converts timeline data back to overlay format
+3. Overlay system updates the text overlay's timing
+4. Video preview re-renders with new timing
+5. Sidebar stays on text panel because text is still selected
+
+### The End Result
+
+All of this complex integration work creates a simple, intuitive experience where:
+
+- **Everything stays in sync:** Timeline, video preview, and editing panels work together
+- **Performance stays smooth:** Updates only happen when necessary
+- **Editing feels natural:** Click, drag, and edit just like you'd expect
+- **No data is lost:** Moving items around preserves all their properties
+
+This is why the Timeline component isn't just a standalone widget - it's deeply integrated into every part of the video editing experience to create a professional-grade editor that feels smooth and responsive.
+
+## Advanced Timeline Features Enabled by the Integration
+
+The `@/timeline-section` component doesn't just translate data - it enables a rich set of professional editing features by connecting RVE's overlay system with the advanced timeline component:
+
+### 1. **Multi-Selection and Batch Operations**
+
+```typescript
+// The component handles complex multi-selection scenarios
+const handleSelectedItemsChange = (itemIds: string[]) => {
+  const overlayIds = itemIds.map(id => parseInt(id, 10));
+  setSelectedOverlayIds(overlayIds);
+  
+  // Set sidebar panel for the first selected item
+  if (overlayIds.length > 0) {
+    setSidebarForOverlay(overlayIds[0]);
+  }
+};
+
+// Batch operations work seamlessly
+const handleDeleteItems = (itemIds: string[]) => {
+  itemIds.forEach(itemId => {
+    const overlayId = parseInt(itemId, 10);
+    deleteOverlay(overlayId);  // Each overlay is properly removed from RVE
+  });
+};
+```
+
+Users can:
+- Select multiple timeline items with Ctrl+click or drag selection
+- Delete, duplicate, or move multiple items at once
+- Maintain selection state across timeline and canvas interactions
+
+### 2. **Advanced Drag and Drop**
+
+The timeline supports sophisticated drag operations:
+
+```typescript
+// Timeline component configuration for advanced interactions
+<Timeline
+  tracks={timelineTracks}
+  enableTrackDrag={true}           // Allow moving items between tracks
+  enableMagneticTrack={true}       // Snap to other items and markers
+  hideItemsOnDrag={true}           // Hide items during drag for better UX
+  showTimelineGuidelines={true}    // Show alignment guides
+  onItemMove={handleItemMove}      // Translate to overlay updates
+  onItemResize={handleItemResize}  // Handle duration changes
+/>
+```
+
+Features include:
+- **Magnetic snapping** - Items snap to other items, track boundaries, and time markers
+- **Visual guidelines** - Alignment guides appear when dragging near other items
+- **Cross-track movement** - Drag items between different tracks (rows)
+- **Real-time preview** - Canvas updates in real-time as you drag timeline items
+
+### 3. **Precision Editing Tools**
+
+```typescript
+// Splitting items at precise time positions
+const handleSplitItems = (itemId: string, splitTime: number) => {
+  const overlayId = parseInt(itemId, 10);
+  const splitFrame = Math.round(splitTime * FPS);
+  splitOverlay(overlayId, splitFrame);  // RVE creates two separate overlays
+};
+
+// Frame-accurate positioning
+const handleTimelineFrameChange = (frame: number) => {
+  if (playerRef.current) {
+    playerRef.current.seekTo(frame);    // Video player seeks to exact frame
+  }
+};
+```
+
+Professional editing capabilities:
+- **Frame-accurate positioning** - Seek to any specific frame
+- **Item splitting** - Cut items at any point to create separate segments
+- **Precise timing** - All operations maintain frame-level precision
+- **Keyboard shortcuts** - Space for play/pause, arrow keys for frame stepping
+
+### 4. **Playback Integration**
+
+The timeline provides comprehensive playback controls that stay synchronized with the video player:
+
+```typescript
+// Playback controls are fully integrated
+<Timeline
+  isPlaying={isPlaying}
+  onPlay={handlePlay}
+  onPause={handlePause}
+  playbackRate={playbackRate}
+  setPlaybackRate={setPlaybackRate}
+  showPlaybackControls={true}
+  currentFrame={currentFrame}
+  onFrameChange={handleTimelineFrameChange}
+/>
+```
+
+Features include:
+- **Play/pause controls** directly on the timeline
+- **Variable playback speed** (0.25x to 2x speed)
+- **Scrubbing** - Click anywhere on timeline to jump to that time
+- **Real-time playhead** - Visual indicator shows current playback position
+
+### 5. **Undo/Redo System**
+
+The integration supports both internal timeline history and external undo/redo systems:
+
+```typescript
+// Timeline can use external undo/redo (from RVE) or internal system
+const undo = parentOnUndo || internalUndo;
+const redo = parentOnRedo || internalRedo;
+const canUndo = parentCanUndo !== undefined ? parentCanUndo : internalCanUndo;
+const canRedo = parentCanRedo !== undefined ? parentCanRedo : internalCanRedo;
+
+<Timeline
+  showUndoRedoControls={true}
+  canUndo={canUndo}
+  canRedo={canRedo}
+  onUndo={undo}
+  onRedo={redo}
+/>
+```
+
+This enables:
+- **Keyboard shortcuts** - Ctrl+Z/Ctrl+Y for undo/redo
+- **Visual indicators** - Buttons show when undo/redo is available
+- **Flexible integration** - Works with any undo/redo system
+- **Operation history** - Track all timeline modifications
+
+## Why This Integration is Critical for RVE
+
+### 1. **Unified User Experience**
+
+Without the `@/timeline-section` integration, users would experience:
+- **Disconnected interfaces** - Timeline and canvas wouldn't stay in sync
+- **Data inconsistencies** - Moving items in one place wouldn't update the other
+- **Broken workflows** - Professional editing patterns wouldn't work
+
+With the integration:
+- **Seamless editing** - All interfaces work together naturally
+- **Consistent state** - Changes anywhere are reflected everywhere
+- **Professional workflows** - Supports industry-standard editing patterns
+
+### 2. **Performance at Scale**
+
+The integration handles performance challenges that would otherwise make RVE unusable with complex projects:
+
+```typescript
+// Without optimization: Every overlay change triggers full timeline rebuild
+// With optimization: Only changed overlays trigger targeted updates
+const hasChanged = overlays.some((overlay, index) => {
+  const lastOverlay = lastProcessedOverlaysRef.current[index];
+  return !lastOverlay || 
+    overlay.id !== lastOverlay.id ||
+    overlay.from !== lastOverlay.from ||
+    overlay.durationInFrames !== lastOverlay.durationInFrames;
+});
+
+if (hasChanged) {
+  setTimelineTracks(transformOverlaysToTracks(overlays));
+}
+```
+
+This enables:
+- **Smooth editing** with hundreds of timeline items
+- **Real-time updates** without performance degradation
+- **Efficient memory usage** through smart change detection
+- **Responsive UI** even during complex operations
+
+### 3. **Extensibility and Maintenance**
+
+The modular architecture makes RVE easier to maintain and extend:
+
+```typescript
+// Adding new overlay types only requires updating the transform functions
+const mapOverlayTypeToTimelineType = (type: OverlayType): string => {
+  switch (type) {
+    case OverlayType.TEXT: return 'text';
+    case OverlayType.VIDEO: return 'video';
+    case OverlayType.NEW_TYPE: return 'new-type';  // Easy to add
+    default: return 'unknown';
+  }
+};
+```
+
+Benefits:
+- **Isolated concerns** - Timeline logic is separate from overlay logic
+- **Easy testing** - Each hook can be tested independently
+- **Future-proof** - New features can be added without breaking existing code
+- **Clear boundaries** - Well-defined interfaces between components
+
+## Integration Notes
+
+The Timeline component is designed to plug into the rest of your editor setup. It already powers the central timeline experience in the SP React Video Editor Pro application.
+
+The `@/timeline-section` component demonstrates how to build sophisticated integrations that:
+- Maintain data consistency across different UI paradigms
+- Provide professional-grade editing capabilities
+- Scale to handle complex projects with hundreds of elements
+- Remain maintainable and extensible over time
+
+That said — the timeline is still evolving. We're actively improving performance, refining drag behavior, and adding new editing tools. Consider this a foundation that will keep getting better with every release.
+
+## Next Steps
+
+- [Go back to overview →](/docs/core/components/timeline/)
+- [Learn about theming →](/docs/core/components/timeline/theming)
+- [Understand the architecture →](/docs/core/components/timeline/architecture) 

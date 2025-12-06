@@ -1,0 +1,28 @@
+name: Run Tests
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x] # Specify Node.js versions to test against
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm" # Or 'yarn' if you use yarn
+
+      - name: Install dependencies
+        run: npm ci # Use 'npm ci' for faster, reliable installs in CI. Use 'yarn install --frozen-lockfile' if you use yarn.
+
+      - name: Run tests
+        run: npm test # This uses the script defined in package.json
