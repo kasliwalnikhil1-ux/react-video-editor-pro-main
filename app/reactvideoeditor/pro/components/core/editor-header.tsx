@@ -11,6 +11,7 @@ import { useEditorContext } from "../../contexts/editor-context";
 import { useEffect, useRef } from "react";
 import { Button } from "../ui/button";
 import { Download, Upload } from "lucide-react";
+import { useToastContext } from "../../contexts/toast-context";
 
 export interface EditorHeaderProps {
   /** Array of available custom themes for the theme dropdown */
@@ -75,11 +76,26 @@ export function EditorHeader({
    * - renderMedia: Function to handle media rendering/export
    * - renderState: Current render state (separate from editor state)
    */
-  const { renderMedia, renderState, saveProject } = useEditorContext();
+  const { 
+    renderMedia, 
+    renderState, 
+    saveProject,
+    overlays,
+    aspectRatio,
+    backgroundColor,
+    fps,
+    durationInFrames,
+    getAspectRatioDimensions,
+    setOverlays,
+    setAspectRatio,
+    setBackgroundColor,
+    baseUrl
+  } = useEditorContext();
 
   // Get theme configuration from context if available
   const themeConfig = useThemeConfig();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToastContext();
 
   // Use direct props if provided, otherwise fall back to context values
   const resolvedAvailableThemes = availableThemes ?? themeConfig?.availableThemes ?? [];
@@ -155,15 +171,60 @@ export function EditorHeader({
                 try {
                   const content = await file.text();
                   const project = JSON.parse(content);
-                  // Here you would typically have a function to load the project
-                  // For now, we'll just log it
-                  console.log('Project loaded:', project);
+                  
+                  // Validate that this is a valid Remotion composition JSON
+                  if (!project.overlays || !Array.isArray(project.overlays)) {
+                    throw new Error('Invalid project file: missing overlays array');
+                  }
+                  
+                  // Load the complete Remotion composition state
+                  // Set aspect ratio first (this will transform current overlays, but we'll replace them)
+                  if (project.aspectRatio) {
+                    setAspectRatio(project.aspectRatio);
+                  }
+                  
+                  // Use setTimeout to ensure aspect ratio is set before overlays
+                  // This prevents setAspectRatio from transforming the overlays we're about to set
+                  setTimeout(() => {
+                    // Set overlays after aspect ratio (they're already correct for the aspect ratio)
+                    if (project.overlays) {
+                      setOverlays(project.overlays);
+                    }
+                    
+                    if (project.backgroundColor !== undefined) {
+                      setBackgroundColor(project.backgroundColor);
+                    }
+                  }, 0);
+                  
+                  console.log('Project loaded successfully:', {
+                    overlays: project.overlays?.length || 0,
+                    aspectRatio: project.aspectRatio,
+                    backgroundColor: project.backgroundColor,
+                    fps: project.fps,
+                    durationInFrames: project.durationInFrames,
+                    width: project.width,
+                    height: project.height
+                  });
+                  
+                  // Show success toast
+                  toast({
+                    title: "Project loaded successfully",
+                    description: `Loaded ${project.overlays?.length || 0} overlays with ${project.aspectRatio || 'default'} aspect ratio`,
+                    duration: 3000,
+                  });
+                  
                   // Reset the input to allow re-uploading the same file
                   if (fileInputRef.current) {
                     fileInputRef.current.value = '';
                   }
                 } catch (error) {
                   console.error('Error loading project:', error);
+                  toast({
+                    title: "Failed to load project",
+                    description: error instanceof Error ? error.message : 'Unknown error',
+                    variant: "destructive",
+                    duration: 5000,
+                  });
                 }
               }
             }}
@@ -177,31 +238,66 @@ export function EditorHeader({
           className="relative hover:bg-accent text-foreground"
           onClick={async () => {
             try {
-              // Get the current project data from context
-              // This is a placeholder - you'll need to implement getProjectData in your context
-              const projectData = {
-                // Add your project data structure here
-                overlays: [], // Example: state.overlays
-                aspectRatio: {}, // Example: state.aspectRatio
-                // Add other project data as needed
+              // Get current dimensions from aspect ratio
+              const { width, height } = getAspectRatioDimensions();
+              
+              // Export the complete Remotion composition JSON
+              const compositionData = {
+                // Remotion composition props
+                overlays: overlays,
+                durationInFrames: durationInFrames,
+                fps: fps,
+                width: width,
+                height: height,
+                src: "", // Base video src if any
+                
+                // Editor state
+                aspectRatio: aspectRatio,
+                backgroundColor: backgroundColor,
+                
+                // Optional metadata
+                baseUrl: baseUrl,
                 version: '1.0',
                 timestamp: new Date().toISOString()
               };
               
               // Create a blob and download link
-              const dataStr = JSON.stringify(projectData, null, 2);
+              const dataStr = JSON.stringify(compositionData, null, 2);
               const dataBlob = new Blob([dataStr], { type: 'application/json' });
               const url = URL.createObjectURL(dataBlob);
               
               const a = document.createElement('a');
               a.href = url;
-              a.download = `video-project-${new Date().toISOString().split('T')[0]}.json`;
+              a.download = `remotion-composition-${new Date().toISOString().split('T')[0]}.json`;
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);
               URL.revokeObjectURL(url);
+              
+              console.log('Project exported successfully:', {
+                overlays: overlays.length,
+                aspectRatio: aspectRatio,
+                backgroundColor: backgroundColor,
+                fps: fps,
+                durationInFrames: durationInFrames,
+                width: width,
+                height: height
+              });
+              
+              // Show success toast
+              toast({
+                title: "Project exported successfully",
+                description: `Exported ${overlays.length} overlays as Remotion composition JSON`,
+                duration: 3000,
+              });
             } catch (error) {
               console.error('Error exporting project:', error);
+              toast({
+                title: "Failed to export project",
+                description: error instanceof Error ? error.message : 'Unknown error',
+                variant: "destructive",
+                duration: 5000,
+              });
             }
           }}
           title="Export Project"

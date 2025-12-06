@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
-import { Toaster } from "./reactvideoeditor/pro/components/ui/toaster";
+import { ToastProviderWrapper } from "./reactvideoeditor/pro/components/providers/toast-provider-wrapper";
 import { PostHogProvider } from "./reactvideoeditor/pro/components/providers/posthog-provider";
 
 export const metadata: Metadata = {
@@ -19,10 +19,11 @@ export default function RootLayout({
       <head />
       <body suppressHydrationWarning>
         <PostHogProvider>
+          <ToastProviderWrapper>
             <main>
               {children}
-              <Toaster />
             </main>
+          </ToastProviderWrapper>
         </PostHogProvider>
       </body>
     </html>
