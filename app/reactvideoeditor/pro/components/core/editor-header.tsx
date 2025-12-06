@@ -286,7 +286,7 @@ export function EditorHeader({
               
               // Show success toast
               toast({
-                title: "Project exported successfully",
+                title: "Project dd exported successfully",
                 description: `Exported ${overlays.length} overlays as Remotion composition JSON`,
                 duration: 3000,
               });
