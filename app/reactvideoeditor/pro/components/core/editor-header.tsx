@@ -8,7 +8,9 @@ import { useThemeConfig } from "../../contexts/theme-context";
 import RenderControls from "../rendering/render-controls";
 import { SaveControls } from "./save-controls";
 import { useEditorContext } from "../../contexts/editor-context";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { Button } from "../ui/button";
+import { Download, Upload } from "lucide-react";
 
 export interface EditorHeaderProps {
   /** Array of available custom themes for the theme dropdown */
@@ -77,6 +79,7 @@ export function EditorHeader({
 
   // Get theme configuration from context if available
   const themeConfig = useThemeConfig();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Use direct props if provided, otherwise fall back to context values
   const resolvedAvailableThemes = availableThemes ?? themeConfig?.availableThemes ?? [];
@@ -130,8 +133,85 @@ export function EditorHeader({
       {/* Spacer to push rendering controls to the right */}
       <div className="grow" />
 
-      {/* Save controls */}
-      <SaveControls onSave={saveProject || (() => Promise.resolve())} />
+      {/* Project controls */}
+      <div className="flex items-center gap-1">
+        {/* Import Project Button */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="relative hover:bg-accent text-foreground"
+          onClick={() => fileInputRef.current?.click()}
+          title="Import Project"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept=".json"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                try {
+                  const content = await file.text();
+                  const project = JSON.parse(content);
+                  // Here you would typically have a function to load the project
+                  // For now, we'll just log it
+                  console.log('Project loaded:', project);
+                  // Reset the input to allow re-uploading the same file
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
+                } catch (error) {
+                  console.error('Error loading project:', error);
+                }
+              }
+            }}
+          />
+        </Button>
+
+        {/* Export Project Button */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="relative hover:bg-accent text-foreground"
+          onClick={async () => {
+            try {
+              // Get the current project data from context
+              // This is a placeholder - you'll need to implement getProjectData in your context
+              const projectData = {
+                // Add your project data structure here
+                overlays: [], // Example: state.overlays
+                aspectRatio: {}, // Example: state.aspectRatio
+                // Add other project data as needed
+                version: '1.0',
+                timestamp: new Date().toISOString()
+              };
+              
+              // Create a blob and download link
+              const dataStr = JSON.stringify(projectData, null, 2);
+              const dataBlob = new Blob([dataStr], { type: 'application/json' });
+              const url = URL.createObjectURL(dataBlob);
+              
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `video-project-${new Date().toISOString().split('T')[0]}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            } catch (error) {
+              console.error('Error exporting project:', error);
+            }
+          }}
+          title="Export Project"
+        >
+          <Download className="w-3.5 h-3.5" />
+        </Button>
+
+        {/* Save controls */}
+        <SaveControls onSave={saveProject || (() => Promise.resolve())} />
+      </div>
 
       {/* Render controls */}
       <RenderControls
